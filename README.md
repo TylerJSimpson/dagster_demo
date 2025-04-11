@@ -140,7 +140,7 @@ cp -r mongodb ../dagster_mflix
 rm -r mongodb
 ```
  
-## Dagster + dlt
+## Dagster + dlt (Extraction)
 
 ```bash
 cd ../dagster_mflix
@@ -203,3 +203,100 @@ dagster dev
 
 In the UI go ahead and go to the `Assets` tab and `Materialize`.
 
+## Dagster + dbt (Transform)
+
+in `assets` create [movies.py](/dagster_mflix/assets/movies.py).
+
+Our goal is to create 3 tables (assets) in dagster: `user engagement`, `top movies by month`, `top movies by engagement`
+
+1st we want to start by creating functions and labeling them as dagster assets
+
+```python
+from dagster_snowflake import SnowflakeResource
+from dagster import asset
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+
+@asset
+def user_engagement(snowflake: SnowflakeResource) -> None:
+    pass
+
+@asset
+def top_movies_by_month(snowflake: SnowflakeResource) -> None:
+    pass
+
+@asset
+def top_movies_by_engagement(snowflake: SnowflakeResource) -> None:
+    pass
+```
+
+Then specify dependencies:
+
+```python
+@asset(
+    deps=["dlt_mongodb_comments","dlt_mongodb_embedded_movies"]
+)
+def user_engagement(snowflake: SnowflakeResource) -> None:
+    pass
+
+@asset(
+    deps=["dlt_mongodb_embedded_movies"]
+)
+def top_movies_by_month(snowflake: SnowflakeResource) -> None:
+    pass
+
+@asset(
+    deps=["user_engagement"]
+)
+def top_movies_by_engagement(snowflake: SnowflakeResource) -> None:
+    pass
+```
+
+Now we want to make sure we update our [__init__.py](/dagster_mflix/__init__.py) to include the Snowflake details as well as the new assets we created:
+
+```python
+from dagster import Definitions, load_assets_from_modules, EnvVar
+from dagster_embedded_elt.dlt import DagsterDltResource
+from .assets import mongodb, movies
+from dagster_snowflake import SnowflakeResource
+
+mongodb_assets = load_assets_from_modules([mongodb])
+movies_assets = load_assets_from_modules([movies], group_name="movies")
+
+snowflake = SnowflakeResource(
+    account=EnvVar("SNOWFLAKE_ACCOUNT"),
+    user=EnvVar("SNOWFLAKE_USER"),
+    password=EnvVar("SNOWFLAKE_PASSWORD"),
+    warehouse="dagster_wh",
+    database="dagster_db",
+    schema="mflix",
+    role="dagster_role"
+)
+
+defs = Definitions(
+    assets=[*mongodb_assets, *movies_assets],
+    resources={
+        "dlt": DagsterDltResource(),
+        "snowflake": snowflake
+    }
+)
+```
+
+We are using `EnvVar` as opposed to `os.environ.get` because dagster handles them differently and this approach hides it from the interface.
+
+Notice in our `movies.py` the `snowflake: SnowflakeResource`:
+
+```python
+def user_engagement(snowflake: SnowflakeResource) -> None:
+```
+
+This is linked to our resource definitions in `__init__.py`:
+
+```python
+    resources={
+        "dlt": DagsterDltResource(),
+        "snowflake": snowflake
+```
+
+Now we can add code to our `movies.py` to actually process the data instead of just pass.
