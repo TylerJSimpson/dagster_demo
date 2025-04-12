@@ -16,13 +16,7 @@ source .venv/bin/activate
 
 Signup: https://cloud.mongodb.com/
 
-Ensure you save the following environment variables:
-
-```python
-MONGODB_USERNAME
-MONGODB_PASSWORD
-MONGODB_CONNECTIONSTRING
-```
+Ensure you save the username, password, and connection string. The connection string is all that is needed in env variables.
 
 Add the `sample_mflix` dataset.
 
@@ -114,7 +108,7 @@ We are using `-e` so that changes to the code will be immediately reflected and 
 
 ## dlt (Extraction)
 
-`dlt` or data load tool is a lightweight python library primarily for the 'E' in ETL.
+`dlt` or data load tool is a lightweight python framework for connection data sources. dlt offers boilerplates to most common connections like in our example MongoDB and Snowflake.
 
 We have already installed the package previously `dlt[snowflake]>=0.3.5`. Now we need to init
 
@@ -140,7 +134,9 @@ cp -r mongodb ../dagster_mflix
 rm -r mongodb
 ```
  
-## Dagster + dlt (Extraction)
+## Dagster: dlt -> snowflake (Extraction)
+
+### Dagster + dlt
 
 ```bash
 cd ../dagster_mflix
@@ -203,7 +199,7 @@ dagster dev
 
 In the UI go ahead and go to the `Assets` tab and `Materialize`.
 
-## Dagster + dbt (Transform)
+### Dagster + Snowflake
 
 in `assets` create [movies.py](/dagster_mflix/assets/movies.py).
 
@@ -299,4 +295,97 @@ This is linked to our resource definitions in `__init__.py`:
         "snowflake": snowflake
 ```
 
-Now we can add code to our `movies.py` to actually process the data instead of just pass.
+Now we can add code to our `movies.py` to actually process the data instead of just pass for our other methods [movies.py](/dagster_mflix/assets/movies.py).
+
+Note you can see the function descriptions in the code i.e.
+
+```python
+    """
+    Movie titles and the number of user engagement (i.e. comments)
+    """
+```
+Dagster will automatically pick these up and set them as the description in the UI.
+
+### Dagster resources
+
+To follow the **DRY** principal we want to utilize Dagster **resources** so we can avoid repeating resources such as connector code like for snowflake in our example.
+
+We can create a **resources** folder and copy the snowflake connection code from our main \_\_init___.py to the \_\_init___.py here.
+
+Now our main \_\_init___.py definitions file will look like this
+
+```python
+from dagster import Definitions, load_assets_from_modules
+from .assets import mongodb, movies, adhoc
+from .resources import snowflake_resource, dlt_resource
+
+mongodb_assets = load_assets_from_modules([mongodb])
+movies_assets = load_assets_from_modules([movies], group_name="movies")
+
+defs = Definitions(
+    assets=[*mongodb_assets, *movies_assets],
+    resources={
+        "dlt": dlt_resource,
+        "snowflake": snowflake_resource
+    }
+)
+```
+
+And our new **resources** \_\_init__.py file like this:
+
+```python
+from dagster import EnvVar
+from dagster_embedded_elt.dlt import DagsterDltResource
+from dagster_snowflake import SnowflakeResource
+
+
+snowflake_resource = SnowflakeResource(
+    account=EnvVar("SNOWFLAKE_ACCOUNT"),
+    user=EnvVar("SNOWFLAKE_USER"),
+    password=EnvVar("SNOWFLAKE_PASSWORD"),
+    warehouse="dagster_wh",
+    database="dagster_db",
+    schema="mflix",
+    role="dagster_role",
+)
+
+dlt_resource = DagsterDltResource()
+```
+
+### Schedules and Jobs
+
+Instead of manually materializing let's look at **schedules** and **jobs**.
+
+**schedules** are the traditional method of automation and represent a fixed time interval. They include a **cron expression** and a **job**.
+
+**jobs** specify which assets to run on the **schedule** at the time specified on the **cron expression**.
+
+Create a **jobs** folder with an [\_\_init__.py](/dagster_mflix/jobs/__init__.py) as well as a **schedules** folder with an [\_\_init__.py](/dagster_mflix/schedules/__init__.py).
+
+We also need to update our definitions function in our main [\_\_init__.py](/dagster_mflix/__init__.py) to include schedules a jobs.
+
+Currently:
+```python
+defs = Definitions(
+    assets=[*mongodb_assets, *movies_assets],
+    resources={
+        "dlt": dlt_resource,
+        "snowflake": snowflake_resource
+    }
+)
+```
+
+Update:
+```python
+defs = Definitions(
+    assets=[*mongodb_assets, *movies_assets],
+    resources={
+        "dlt": dlt_resource,
+        "snowflake": snowflake_resource
+    },
+    jobs=[movies_job],
+    schedules=[movies_schedule]
+)
+```
+
+Now on the Dagster UI under **Overview** then **Schedules** you will see the newly created schedule and can turn it on.
