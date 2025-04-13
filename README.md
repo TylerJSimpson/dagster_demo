@@ -389,3 +389,110 @@ defs = Definitions(
 ```
 
 Now on the Dagster UI under **Overview** then **Schedules** you will see the newly created schedule and can turn it on.
+
+### Partitions
+
+**Partitions** can be used to backfill your DAGs. Paritions are collections of chunks of the data. This is helpful for parallel processing. Backfilling is the process of running **partitions** for assets or ops that either don't exist or updating existing records.
+
+Again let's create a new folder **partitions** with [\_\_init__.py](/dagster_mflix/partitions/__init__.py).
+
+Then we need to update our assets to apply our partitions.
+
+```python
+from ..partitions import monthly_partition
+```
+
+Then you can update the asset to include the partition.
+
+```python
+@asset(
+    deps=["dlt_mongodb_embedded_movies"],
+    partitions_def=monthly_partition
+)
+```
+
+Inside the asset function you can then include the partition key.
+
+```python
+    partition_date = context.partition_key
+```
+
+And use it in your query f string.
+
+```sql
+        where released >= '{partition_date}'::date
+        and released < '{partition_date}'::date + interval '1 month'
+```
+
+### Sensors and Auto Materialiation
+
+**Sensors** are definitions that allow you to instigate runs based on some external state change. For example, run when a file hits an S3 bucket.
+
+Again we will create a **sensors** folder with [\_\_init__.py](/dagster_mflix/sensors/__init__.py).
+
+You will notice in the sensor we included a new job which needs added to the jobs init file:
+
+```python
+adhoc_job = define_asset_job(
+    name="adhoc_job",
+    selection=AssetSelection.assets(["movie_embeddings"])
+)
+```
+
+Now we need to create the new asset [adhoc.py](/dagster_mflix/assets/adhoc.py).
+
+Note that we now need to update the assets and add the sensors in our main [\_\_init__.py](/dagster_mflix/__init__.py).
+
+```python
+from dagster import Definitions, load_assets_from_modules
+
+from .assets import mongodb, movies, adhoc
+from .resources import snowflake_resource, dlt_resource
+from .jobs import movies_job, adhoc_job
+from .schedules import movies_schedule
+from .sensors import adhoc_sensor
+
+
+mongodb_assets = load_assets_from_modules([mongodb])
+movies_assets = load_assets_from_modules([movies], group_name="movies")
+adhoc_assets = load_assets_from_modules([adhoc], group_name="ad_hoc")
+
+defs = Definitions(
+    assets=[*mongodb_assets, *movies_assets, *adhoc_assets],
+    resources={
+        "dlt": dlt_resource,
+        "snowflake": snowflake_resource
+    },
+    jobs=[movies_job, adhoc_job],
+    schedules=[movies_schedule],
+    sensors=[adhoc_sensor]
+)
+```
+
+Now how do we actually get this new ad_hoc movie_embeddings to run?
+
+Recall:
+
+```python
+class AdhocConfig(Config):
+    filename: str
+    ratings: str
+```
+
+So every 30 seconds this is going to poll if there is a file that exists that has this ratings data.
+
+If we create [ratings.json](/dagster_mflix/adhoc/ratings.json) and specify the rating and turn the sensor on you will see it will matieralize the tnse data in the data folder.
+
+### Auto-materialization
+
+This is a new feature. It allows you to specify conditions under which assets should be materialized instead of defining imperative workflows.
+
+The main way it is used is in asset definitions for **eager** scenarios i.e. it will materialize when upstream assets materialize.
+
+```python
+from dagster import AutoMaterializePolicy
+
+auto_materialize_poly = AutoMaterializePolicy.eager()
+```
+
+Now check out the improved [movies.py](/dagster_mflix/assets/movies.py) where we have added this auto materialization policy to top_movies_by_engagement. This means if user_engagement just before it materializes then this asset will as well.
